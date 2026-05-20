@@ -34,6 +34,11 @@ if run_button and url_input:
             parsed_url = urllib.parse.urlparse(url_input)
             slug = parsed_url.path.strip("/")
             
+            # Extract text elements early to avoid missing variable errors
+            paragraphs = soup.find_all("p")
+            paragraphs_text = [p.text for p in paragraphs]
+            article_text = " ".join(paragraphs_text)
+            
             # Split screen layout
             col1, col2 = st.columns(2)
             
@@ -150,7 +155,6 @@ if run_button and url_input:
                 
                 # 1. Paragraph Layout & Clean Typography Formatting
                 st.subheader("1. Paragraph Typographic Integrity")
-                paragraphs = soup.find_all("p")
                 formatting_errors = 0
                 
                 for p in paragraphs:
