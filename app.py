@@ -20,28 +20,34 @@ st.write("Enter a published or staging blog URL below to run an instant enterpri
 url_input = st.text_input("Blog Post URL to Audit:", placeholder="https://yourdomain.com/blog-post-slug")
 run_button = st.button("Run Comprehensive Audit", type="primary")
 
-# Modern Browser Headers to Bypass Detection
+# Modern Chrome Browser Headers
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-Site": "cross-site",
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1"
 }
 
-def check_url_status(url):
-    """Helper function for fast parallel link checking."""
+def check_url_status(args):
+    """Helper function to perform parallel requests with fallback and site-referrers."""
+    url, base_url = args
+    headers = DEFAULT_HEADERS.copy()
+    headers["Referer"] = base_url
+    
     try:
-        res = crequests.head(url, headers=DEFAULT_HEADERS, timeout=5, impersonate="chrome120", allow_redirects=True)
-        if res.status_code == 405: # Fallback if HEAD is disallowed
-            res = crequests.get(url, headers=DEFAULT_HEADERS, timeout=5, impersonate="chrome120", stream=True)
+        # Try HEAD request with modern browser impersonation
+        res = crequests.head(url, headers=headers, timeout=6, impersonate="chrome124", allow_redirects=True)
+        # If HEAD method is rejected (405/403), fallback to a streamed GET request
+        if res.status_code in [403, 405]:
+            res = crequests.get(url, headers=headers, timeout=6, impersonate="chrome124", stream=True)
         return res.status_code
     except:
         return 404
@@ -49,20 +55,26 @@ def check_url_status(url):
 if run_button and url_input:
     with st.spinner("Executing advanced structural, formatting, asset, and social meta checks..."):
         try:
-            # Fetch content using impersonated TLS fingerprinting
+            # Add Referer matching target root to mimic real site navigation
+            request_headers = DEFAULT_HEADERS.copy()
+            parsed_url = urllib.parse.urlparse(url_input)
+            request_headers["Referer"] = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+
+            # Execute request with impersonated browser profile
             response = crequests.get(
                 url_input, 
-                headers=DEFAULT_HEADERS, 
+                headers=request_headers, 
                 timeout=15, 
-                impersonate="chrome120"
+                impersonate="chrome124",
+                allow_redirects=True
             )
             
             if response.status_code != 200:
                 st.error(f"❌ CRITICAL: Could not fetch page. HTTP Status Code: {response.status_code}")
+                st.info("💡 Tip: If this domain forces strong Cloudflare Captchas, headless browsers (Playwright) or proxy services are required.")
                 st.stop()
                 
             soup = BeautifulSoup(response.text, "html.parser")
-            parsed_url = urllib.parse.urlparse(url_input)
             slug = parsed_url.path.strip("/")
             
             paragraphs = soup.find_all("p")
@@ -221,7 +233,7 @@ if run_button and url_input:
                     else:
                         st.success("✅ Table of Contents perfectly mirrors active H2 headers.")
 
-                # 3. Media Assets Audit (Parallel Execution)
+                # 3. Media Assets Audit
                 st.subheader("3. Media & Asset Health (Images & Video)")
                 videos = soup.find_all(["video", "iframe", "embed"])
                 video_count = sum(1 for vid in videos if (v_src := vid.get("src") or vid.get("data-src")) and any(domain in v_src for domain in ["youtube", "vimeo", "wistia", "player", "mp4"]))
@@ -234,9 +246,8 @@ if run_button and url_input:
                 imgs = soup.find_all("img")
                 missing_alt = sum(1 for img in imgs if not img.get("alt") or img.get("alt").strip() == "")
                 
-                # Concurrent image availability checks
-                img_urls = [urllib.parse.urljoin(url_input, img.get("src")) for img in imgs if img.get("src")]
-                with ThreadPoolExecutor(max_workers=10) as executor:
+                img_urls = [(urllib.parse.urljoin(url_input, img.get("src")), url_input) for img in imgs if img.get("src")]
+                with ThreadPoolExecutor(max_workers=5) as executor:
                     img_statuses = list(executor.map(check_url_status, img_urls))
                 
                 broken_imgs = sum(1 for status in img_statuses if status >= 400)
@@ -245,9 +256,9 @@ if run_button and url_input:
                 else: st.success("✅ All image tags contain descriptive alt attributes.")
                 if broken_imgs > 0: st.error(f"❌ Broken Assets: Found {broken_imgs} broken image source paths.")
 
-                # 4. Links Audit (Parallel Execution)
+                # 4. Links Audit
                 st.subheader("4. Link Profiles (404 & Nofollow)")
-                links = soup.find_all("a", href=True)[:20]
+                links = soup.find_all("a", href=True)[:15]
                 
                 valid_links = []
                 ext_no_nofollow = 0
@@ -258,13 +269,13 @@ if run_button and url_input:
                     full_link = urllib.parse.urljoin(url_input, href)
                     is_ext = parsed_url.netloc not in full_link
                     if is_ext and "nofollow" not in rel: ext_no_nofollow += 1
-                    valid_links.append((full_link, is_ext))
+                    valid_links.append(((full_link, url_input), is_ext))
 
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    link_statuses = list(executor.map(check_url_status, [url for url, _ in valid_links]))
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    link_statuses = list(executor.map(check_url_status, [item[0] for item in valid_links]))
 
-                broken_int = sum(1 for (url, is_ext), status in zip(valid_links, link_statuses) if status == 404 and not is_ext)
-                broken_ext = sum(1 for (url, is_ext), status in zip(valid_links, link_statuses) if status == 404 and is_ext)
+                broken_int = sum(1 for ((url, base), is_ext), status in zip(valid_links, link_statuses) if status == 404 and not is_ext)
+                broken_ext = sum(1 for ((url, base), is_ext), status in zip(valid_links, link_statuses) if status == 404 and is_ext)
 
                 if broken_int > 0: st.error(f"❌ Internal Links: Found {broken_int} broken 404 targets.")
                 else: st.success("✅ No broken internal navigation targets found.")
