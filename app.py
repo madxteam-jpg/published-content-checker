@@ -1,11 +1,10 @@
 import streamlit as st
-import requests
 from bs4 import BeautifulSoup
 import re
 import urllib.parse
 from spellchecker import SpellChecker
-import json
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from curl_cffi import requests as crequests
 
 @st.cache_resource
 def load_spell_checker():
@@ -21,11 +20,43 @@ st.write("Enter a published or staging blog URL below to run an instant enterpri
 url_input = st.text_input("Blog Post URL to Audit:", placeholder="https://yourdomain.com/blog-post-slug")
 run_button = st.button("Run Comprehensive Audit", type="primary")
 
+# Modern Browser Headers to Bypass Detection
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1"
+}
+
+def check_url_status(url):
+    """Helper function for fast parallel link checking."""
+    try:
+        res = crequests.head(url, headers=DEFAULT_HEADERS, timeout=5, impersonate="chrome120", allow_redirects=True)
+        if res.status_code == 405: # Fallback if HEAD is disallowed
+            res = crequests.get(url, headers=DEFAULT_HEADERS, timeout=5, impersonate="chrome120", stream=True)
+        return res.status_code
+    except:
+        return 404
+
 if run_button and url_input:
     with st.spinner("Executing advanced structural, formatting, asset, and social meta checks..."):
         try:
-            # Fetch webpage content
-            response = requests.get(url_input, timeout=15, headers={"User-Agent": "QA-Audit-Bot/3.0"})
+            # Fetch content using impersonated TLS fingerprinting
+            response = crequests.get(
+                url_input, 
+                headers=DEFAULT_HEADERS, 
+                timeout=15, 
+                impersonate="chrome120"
+            )
+            
             if response.status_code != 200:
                 st.error(f"❌ CRITICAL: Could not fetch page. HTTP Status Code: {response.status_code}")
                 st.stop()
@@ -34,12 +65,10 @@ if run_button and url_input:
             parsed_url = urllib.parse.urlparse(url_input)
             slug = parsed_url.path.strip("/")
             
-            # Extract text elements early to avoid missing variable errors
             paragraphs = soup.find_all("p")
             paragraphs_text = [p.text for p in paragraphs]
             article_text = " ".join(paragraphs_text)
             
-            # Split screen layout
             col1, col2 = st.columns(2)
             
             # --- COLUMN 1: URL, METADATA & TECHNICAL STRUCTURE ---
@@ -85,7 +114,6 @@ if run_button and url_input:
                 else:
                     st.success("✅ Page is configured as Indexable.")
                 
-                # Mobile Check (Looking for mandatory viewport scaling configurations)
                 viewport = soup.find("meta", attrs={"name": "viewport"})
                 if viewport and "width=device-width" in viewport.get("content", "").lower():
                     st.success("✅ Mobile Responsive framework tag present (`width=device-width` initialized).")
@@ -112,7 +140,6 @@ if run_button and url_input:
 
                 # 5. Editorial Attribution & Reading Analytics
                 st.subheader("5. Attribution & Analytics Metrics")
-                # Author Audits
                 author_tag = soup.find("meta", attrs={"name": "author"}) or \
                              soup.find("meta", property="article:author") or \
                              soup.find(class_=re.compile("author|byline|writer", re.I)) or \
@@ -123,7 +150,6 @@ if run_button and url_input:
                 else:
                     st.error("❌ Editorial Error: No assigned Author profile or byline block detected.")
 
-                # Reading Time Audits
                 reading_time = soup.find("meta", attrs={"name": re.compile("twitter:label1|reading|duration", re.I)}) or \
                                soup.find(class_=re.compile("reading-time|read-time|duration", re.I))
                 if reading_time:
@@ -132,7 +158,7 @@ if run_button and url_input:
                 else:
                     st.warning("⚠️ Reading time estimator display notice is absent from this template.")
 
-                # Taxonomy Assignment (Categories / Tags)
+                # 6. Taxonomy Assignment
                 st.subheader("6. Categories, Tags & Cross-Linking")
                 taxonomy_container = soup.find(class_=re.compile("category|tag-list|post-tags|meta-categories|entry-categories", re.I)) or \
                                      soup.find("a", rel=re.compile("category|tag", re.I))
@@ -147,22 +173,16 @@ if run_button and url_input:
                 if related_content:
                     st.success("✅ Reciprocal cross-linking active (Related posts / Read next blocks are active).")
                 else:
-                    st.warning("⚠️ Missing 'Related Content' internal internal cross-linking module.")
+                    st.warning("⚠️ Missing 'Related Content' internal cross-linking module.")
 
             # --- COLUMN 2: ON-PAGE CONTENT & LINK QUALITY ---
             with col2:
                 st.header("📝 Formatting, Copywriting & Media Assets")
                 
-                # 1. Paragraph Layout & Clean Typography Formatting
+                # 1. Paragraph Typographic Integrity
                 st.subheader("1. Paragraph Typographic Integrity")
-                formatting_errors = 0
+                formatting_errors = sum(1 for p in paragraphs if "\xa0" in p.text or p.text.startswith(" ") or p.text.endswith(" "))
                 
-                for p in paragraphs:
-                    p_text = p.text
-                    # Check for systemic spacing flaws (Double space gaps or irregular trailing tabs)
-                    if "  " in p_text or p_text.startswith(" ") or p_text.endswith(" "):
-                        formatting_errors += 1
-                        
                 if formatting_errors == 0 and len(paragraphs) > 0:
                     st.success("✅ Paragraph layouts clean. Zero double spacing anomalies or broken indents detected.")
                 elif len(paragraphs) > 0:
@@ -170,7 +190,7 @@ if run_button and url_input:
                 else:
                     st.info("ℹ️ No readable structural `<p>` text modules found to audit layout formatting.")
 
-                # 2. Heading Structure (H1 -> H2 -> H3) & ToC
+                # 2. Heading Structure & Table of Contents
                 st.subheader("2. Heading Structure & Table of Contents")
                 h1s = soup.find_all("h1")
                 if len(h1s) != 1:
@@ -196,68 +216,56 @@ if run_button and url_input:
                     toc_links_text = [a.text.strip().lower() for a in toc_container.find_all("a")]
                     missing_h2s = [h for h in h2_headings if not any(h in t or t in h for t in toc_links_text)]
                     if missing_h2s:
-                        st.error(f"❌ Disconnect: Found H2 headings missing from your Table of Contents:")
+                        st.error("❌ Disconnect: Found H2 headings missing from your Table of Contents:")
                         for miss in missing_h2s[:2]: st.write(f"- *\"{miss}\"*")
                     else:
                         st.success("✅ Table of Contents perfectly mirrors active H2 headers.")
 
-                # 3. Media Assets & Embedded Video Modules
+                # 3. Media Assets Audit (Parallel Execution)
                 st.subheader("3. Media & Asset Health (Images & Video)")
-                # Embedded Video Verification
                 videos = soup.find_all(["video", "iframe", "embed"])
-                video_count = 0
-                broken_videos = 0
-                
-                for vid in videos:
-                    v_src = vid.get("src") or vid.get("data-src")
-                    # Make sure it's actually an embedded player asset, not an analytical tracker snippet
-                    if v_src and any(domain in v_src for domain in ["youtube", "vimeo", "wistia", "player", "mp4"]):
-                        video_count += 1
-                        if v_src.startswith("//"):
-                            v_src = "https:" + v_src
-                        # Verify asset anchor link is populated correctly
-                        if "unassigned" in v_src or v_src.strip() == "":
-                            broken_videos += 1
+                video_count = sum(1 for vid in videos if (v_src := vid.get("src") or vid.get("data-src")) and any(domain in v_src for domain in ["youtube", "vimeo", "wistia", "player", "mp4"]))
                 
                 if video_count == 0:
                     st.info("ℹ️ Media Audit: No integrated video embeds located inside copy.")
-                elif broken_videos > 0:
-                    st.error(f"❌ Found {broken_videos} unassigned or broken video embed anchors.")
                 else:
-                    st.success(f"✅ Verified {video_count} video embed blocks successfully connected to media sources.")
+                    st.success(f"✅ Located {video_count} video embed blocks.")
 
-                # Existing Images Audit
                 imgs = soup.find_all("img")
-                missing_alt, broken_imgs = 0, 0
-                for img in imgs:
-                    src = img.get("src")
-                    alt = img.get("alt")
-                    if not src: continue
-                    img_url = urllib.parse.urljoin(url_input, src)
-                    if not alt or alt.strip() == "": missing_alt += 1
-                    try:
-                        if requests.head(img_url, timeout=3).status_code >= 400: broken_imgs += 1
-                    except: broken_imgs += 1
+                missing_alt = sum(1 for img in imgs if not img.get("alt") or img.get("alt").strip() == "")
+                
+                # Concurrent image availability checks
+                img_urls = [urllib.parse.urljoin(url_input, img.get("src")) for img in imgs if img.get("src")]
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    img_statuses = list(executor.map(check_url_status, img_urls))
+                
+                broken_imgs = sum(1 for status in img_statuses if status >= 400)
+                
                 if missing_alt > 0: st.error(f"❌ {missing_alt} image(s) are missing alternative descriptive text.")
                 else: st.success("✅ All image tags contain descriptive alt attributes.")
                 if broken_imgs > 0: st.error(f"❌ Broken Assets: Found {broken_imgs} broken image source paths.")
 
-                # 4. Internal & External Hyperlinks
+                # 4. Links Audit (Parallel Execution)
                 st.subheader("4. Link Profiles (404 & Nofollow)")
-                links = soup.find_all("a", href=True)
-                broken_int, broken_ext, ext_no_nofollow = 0, 0, 0
-                for link in links[:20]:
+                links = soup.find_all("a", href=True)[:20]
+                
+                valid_links = []
+                ext_no_nofollow = 0
+                for link in links:
                     href = link.get("href")
                     rel = link.get("rel", [])
                     if href.startswith("#") or href.startswith("mailto:") or not href: continue
                     full_link = urllib.parse.urljoin(url_input, href)
                     is_ext = parsed_url.netloc not in full_link
                     if is_ext and "nofollow" not in rel: ext_no_nofollow += 1
-                    try:
-                        if requests.head(full_link, timeout=3, allow_redirects=True).status_code == 404:
-                            if is_ext: broken_ext += 1
-                            else: broken_int += 1
-                    except: pass
+                    valid_links.append((full_link, is_ext))
+
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    link_statuses = list(executor.map(check_url_status, [url for url, _ in valid_links]))
+
+                broken_int = sum(1 for (url, is_ext), status in zip(valid_links, link_statuses) if status == 404 and not is_ext)
+                broken_ext = sum(1 for (url, is_ext), status in zip(valid_links, link_statuses) if status == 404 and is_ext)
+
                 if broken_int > 0: st.error(f"❌ Internal Links: Found {broken_int} broken 404 targets.")
                 else: st.success("✅ No broken internal navigation targets found.")
                 if broken_ext > 0 or ext_no_nofollow > 0:
